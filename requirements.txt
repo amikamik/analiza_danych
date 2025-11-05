@@ -3,3 +3,4 @@ uvicorn
 pandas
 ydata-profiling
 setuptools
+python-multipart
