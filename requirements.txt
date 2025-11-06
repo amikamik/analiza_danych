@@ -4,3 +4,4 @@ pandas
 ydata-profiling
 setuptools
 python-multipart
+pingouin
