@@ -2,8 +2,9 @@ import pandas as pd
 import pingouin as pg
 import itertools
 import io
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse # Musimy też zwracać JSON
+# === ZMIANA 1: Musimy zaimportować HTTPException ===
+from fastapi import FastAPI, File, UploadFile, HTTPException 
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ydata_profiling import ProfileReport
 
@@ -17,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === KROK 1: NOWY ENDPOINT DO PODGLĄDU PLIKU ===
+# === KROK 1: ENDPOINT PODGLĄDU (Z POPRAWKĄ BŁĘDU) ===
 @app.post("/api/parse-preview", response_class=JSONResponse)
 async def parse_preview(file: UploadFile = File(...)):
     """
@@ -25,52 +26,48 @@ async def parse_preview(file: UploadFile = File(...)):
     i dane do podglądu. Zwraca je jako JSON.
     """
     try:
-        # Używamy file.file (obiekt pliku) i nrows=10, aby nie wczytać całego pliku.
-        # To jest super szybkie i oszczędza pamięć.
-        df_preview = pd.read_csv(file.file, nrows=10)
-        
-        # Pobierz nazwy kolumn
+        # Próba odczytania CSV z różnymi popularnymi kodowaniami
+        # To powinno naprawić błąd odczytu
+        try:
+            df_preview = pd.read_csv(file.file, nrows=10, encoding='utf-8')
+        except UnicodeDecodeError:
+            # Jeśli UTF-8 zawiedzie, spróbuj popularnego w Windows
+            file.file.seek(0) # Wróć na początek pliku
+            df_preview = pd.read_csv(file.file, nrows=10, encoding='latin1')
+
         columns = df_preview.columns.tolist()
-        
-        # Pobierz dane podglądu jako listę list
         preview_data = df_preview.values.tolist()
         
-        # Odeślij JSON do frontendu
         return {
             "columns": columns,
             "preview_data": preview_data
         }
         
     except Exception as e:
-        # Zwróć błąd, jeśli plik CSV jest uszkodzony
-        return JSONResponse(
+        # === ZMIANA 2: Używamy HTTPException zamiast JSONResponse ===
+        # To gwarantuje, że nagłówki CORS zostaną poprawnie dołączone
+        raise HTTPException(
             status_code=400,
-            content={"error": f"Nie udało się przetworzyć pliku CSV. Błąd: {e}"}
+            detail=f"Nie udało się przetworzyć pliku CSV. Upewnij się, że ma poprawne kodowanie (np. UTF-8). Błąd: {e}"
         )
 
-# === PONIŻEJ ZOSTAWIONY JEST NASZ STARY KOD (NA RAZIE) ===
-# === BĘDZIEMY GO MODYFIKOWAĆ W NASTĘPNYM KROKU ===
+# === PONIŻEJ RESZTA KODU (BEZ ZMIAN) ===
 
 def run_academic_tests_and_build_table(df: pd.DataFrame) -> str:
-    # ... (cała ta duża, "akademicka" funkcja zostaje tutaj na razie bez zmian) ...
+    # ... (cała ta duża, "akademicka" funkcja zostaje tutaj bez zmian) ...
     results = []
     
     # 1. Zidentyfikuj typy zmiennych
-    continuous_cols = df.select_dtypes(include='number').columns.tolist()
+    all_numeric_cols = df.select_dtypes(include='number').columns.tolist()
     all_categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
     bool_cols = df.select_dtypes(include='bool').columns.tolist()
 
-    # Zmienne ciągłe to te numeryczne, które MAJĄ więcej niż 2 unikalne wartości
     continuous_cols = [col for col in all_numeric_cols if df[col].nunique() > 2 and col.lower() != 'id']
-    
-    # Zmienne binarne to te z 2 wartościami
     binary_numeric = [col for col in all_numeric_cols if df[col].nunique() == 2]
     binary_categorical = [col for col in all_categorical_cols if df[col].nunique() == 2]
     binary_cols = binary_categorical + binary_numeric + bool_cols
-    
-    # Zmienne kategoryczne (do Chi2) to wszystkie, które nie są ciągłe
     categorical_cols = all_categorical_cols + binary_numeric + bool_cols
-    categorical_cols = list(set(categorical_cols)) # Usuń duplikaty
+    categorical_cols = list(set(categorical_cols)) 
 
     # --- SCENARIUSZ 1: Ciągła vs. Binarna ---
     for cont_col, bin_col in itertools.product(continuous_cols, binary_cols):
@@ -160,7 +157,6 @@ async def generate_report(file: UploadFile = File(...)):
                             missing_diagrams=None)
     report1_html = profile.to_html()
     
-    # Używamy poprawionej funkcji, ale ona wciąż "zgaduje" typy
     report2_html = run_academic_tests_and_build_table(df) 
     
     final_html = report1_html + "<br><hr style='border: 2px solid #007bff;'>" + report2_html
