@@ -2,14 +2,15 @@ import pandas as pd
 import pingouin as pg
 import itertools
 import io
-# === ZMIANA 1: Musimy zaimportować HTTPException ===
-from fastapi import FastAPI, File, UploadFile, HTTPException 
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException
+# === ZMIANA 1: Importujemy Response, aby ręcznie ustawić nagłówki ===
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from ydata_profiling import ProfileReport
 
 app = FastAPI()
 
+# Nasza standardowa konfiguracja CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,38 +18,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === KROK 1: ENDPOINT PODGLĄDU (Z POPRAWKĄ BŁĘDU) ===
-@app.post("/api/parse-preview", response_class=JSONResponse)
+# === KROK 1: ENDPOINT PODGLĄDU (Z NOWĄ OBSŁUGĄ BŁĘDÓW) ===
+@app.post("/api/parse-preview") # Usunęliśmy response_class, aby mieć pełną kontrolę
 async def parse_preview(file: UploadFile = File(...)):
     """
     Wczytuje tylko pierwsze 10 wierszy pliku CSV, aby pobrać nazwy kolumn
     i dane do podglądu. Zwraca je jako JSON.
     """
     try:
-        # Próba odczytania CSV z różnymi popularnymi kodowaniami
-        # To powinno naprawić błąd odczytu
+        # Używamy file.read() zamiast file.file, co jest stabilniejsze
+        content = await file.read()
+        
         try:
-            df_preview = pd.read_csv(file.file, nrows=10, encoding='utf-8')
+            # Użyj io.BytesIO, aby Pandas myślał, że czyta z pliku
+            df_preview = pd.read_csv(io.BytesIO(content), nrows=10, encoding='utf-8')
         except UnicodeDecodeError:
             # Jeśli UTF-8 zawiedzie, spróbuj popularnego w Windows
-            file.file.seek(0) # Wróć na początek pliku
-            df_preview = pd.read_csv(file.file, nrows=10, encoding='latin1')
+            df_preview = pd.read_csv(io.BytesIO(content), nrows=10, encoding='latin1')
 
         columns = df_preview.columns.tolist()
         preview_data = df_preview.values.tolist()
         
-        return {
+        # Zwróć poprawną odpowiedź JSON
+        return JSONResponse(content={
             "columns": columns,
             "preview_data": preview_data
-        }
+        })
         
     except Exception as e:
-        # === ZMIANA 2: Używamy HTTPException zamiast JSONResponse ===
-        # To gwarantuje, że nagłówki CORS zostaną poprawnie dołączone
-        raise HTTPException(
-            status_code=400,
-            detail=f"Nie udało się przetworzyć pliku CSV. Upewnij się, że ma poprawne kodowanie (np. UTF-8). Błąd: {e}"
-        )
+        # === ZMIANA 2: Zwracamy błąd 400 RĘCZNIE ===
+        # Zamiast HTTPException, budujemy JSONResponse i ręcznie dodajemy nagłówki
+        # To powinno "przebić się" przez blokadę CORS przeglądarki
+        error_content = {"error": f"Nie udało się przetworzyć pliku CSV. Upewnij się, że to poprawny plik. Błąd: {e}"}
+        response = JSONResponse(status_code=400, content=error_content)
+        
+        # Ręczne dodanie nagłówków CORS do odpowiedzi błędu
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
 
 # === PONIŻEJ RESZTA KODU (BEZ ZMIAN) ===
 
@@ -147,7 +153,6 @@ async def generate_report(file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(content=f"<h1>Błąd</h1><p>Plik CSV jest uszkodzony. Błąd: {e}</p>", status_code=400)
 
-    # (Używam Twojej wersji z `minimal=True`, aby zapewnić stabilność)
     profile = ProfileReport(df, 
                             title="Część 1: Automatyczny Raport Opisowy (Podstawowy)", 
                             minimal=True, 
