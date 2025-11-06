@@ -3,14 +3,12 @@ import pingouin as pg
 import itertools
 import io
 from fastapi import FastAPI, File, UploadFile, HTTPException
-# === ZMIANA 1: Importujemy Response, aby ręcznie ustawić nagłówki ===
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from ydata_profiling import ProfileReport
 
 app = FastAPI()
 
-# Nasza standardowa konfiguracja CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,41 +16,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# === KROK 1: ENDPOINT PODGLĄDU (Z NOWĄ OBSŁUGĄ BŁĘDÓW) ===
-@app.post("/api/parse-preview") # Usunęliśmy response_class, aby mieć pełną kontrolę
+# === KROK 1: ENDPOINT PODGLĄDU (Z POPRAWKĄ 'NaN') ===
+@app.post("/api/parse-preview")
 async def parse_preview(file: UploadFile = File(...)):
-    """
-    Wczytuje tylko pierwsze 10 wierszy pliku CSV, aby pobrać nazwy kolumn
-    i dane do podglądu. Zwraca je jako JSON.
-    """
     try:
-        # Używamy file.read() zamiast file.file, co jest stabilniejsze
         content = await file.read()
         
         try:
-            # Użyj io.BytesIO, aby Pandas myślał, że czyta z pliku
             df_preview = pd.read_csv(io.BytesIO(content), nrows=10, encoding='utf-8')
         except UnicodeDecodeError:
-            # Jeśli UTF-8 zawiedzie, spróbuj popularnego w Windows
             df_preview = pd.read_csv(io.BytesIO(content), nrows=10, encoding='latin1')
 
-        columns = df_preview.columns.tolist()
-        preview_data = df_preview.values.tolist()
+        # === ZMIANA 1: NAPRAWA BŁĘDU "NaN" ===
+        # Zamień wszystkie 'NaN' na 'None' (co w JSON stanie się 'null')
+        # Musimy najpierw zmienić typ na 'object', aby móc wstawić 'None'
+        df_preview_filled = df_preview.astype(object).where(pd.notnull(df_preview), None)
+        # === KONIEC ZMIANY ===
+
+        columns = df_preview_filled.columns.tolist()
+        preview_data = df_preview_filled.values.tolist() # Użyj "wypełnionych" danych
         
-        # Zwróć poprawną odpowiedź JSON
         return JSONResponse(content={
             "columns": columns,
             "preview_data": preview_data
         })
         
     except Exception as e:
-        # === ZMIANA 2: Zwracamy błąd 400 RĘCZNIE ===
-        # Zamiast HTTPException, budujemy JSONResponse i ręcznie dodajemy nagłówki
-        # To powinno "przebić się" przez blokadę CORS przeglądarki
         error_content = {"error": f"Nie udało się przetworzyć pliku CSV. Upewnij się, że to poprawny plik. Błąd: {e}"}
         response = JSONResponse(status_code=400, content=error_content)
-        
-        # Ręczne dodanie nagłówków CORS do odpowiedzi błędu
         response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
